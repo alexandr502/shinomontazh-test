@@ -1,6 +1,6 @@
 /* Test-only automatic rollback worker — v11 */
 
-const CACHE = 'tirecalc-shared-v11';
+const CACHE = 'tirecalc-shared-v12';
 const CACHE_PREFIX = 'tirecalc-shared-v';
 const CONTROL_CACHE = 'tirecalc-control-v2';
 
