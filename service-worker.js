@@ -1,5 +1,5 @@
-/* Test-only rollback worker */
-const CACHE = 'tirecalc-shared-v7';
+/* Test-only rollback worker — v8 */
+const CACHE = 'tirecalc-shared-v8';
 const CACHE_PREFIX = 'tirecalc-shared-';
 const CONTROL_CACHE = 'tirecalc-control-v2';
 
@@ -16,14 +16,15 @@ const FILES = [
   './icon-512.png'
 ];
 
+function fileUrl(path) {
+  return new URL(path, self.location.href).href;
+}
+
 async function readState() {
-  const cache = await caches.open(CONTROL_CACHE);
-  const response = await cache.match(STATE_URL);
-
-  if (!response) return null;
-
   try {
-    return await response.json();
+    const cache = await caches.open(CONTROL_CACHE);
+    const response = await cache.match(STATE_URL);
+    return response ? await response.json() : null;
   } catch (_) {
     return null;
   }
@@ -35,34 +36,40 @@ async function writeState(state) {
   await cache.put(
     STATE_URL,
     new Response(JSON.stringify(state), {
-      headers: { 'Content-Type': 'application/json' }
+      headers: {
+        'Content-Type': 'application/json'
+      }
     })
   );
 }
 
-async function cacheHasFiles(name) {
+async function cacheIsComplete(name) {
   if (!name) return false;
 
   try {
     const cache = await caches.open(name);
 
-    const root = await cache.match(
-      new URL('./', self.location.href).href
-    );
+    for (const file of FILES) {
+      if (!await cache.match(fileUrl(file))) {
+        return false;
+      }
+    }
 
-    const index = await cache.match(
-      new URL('./index.html', self.location.href).href
-    );
-
-    return Boolean(root || index);
+    return true;
   } catch (_) {
     return false;
   }
 }
 
+function versionNumber(name) {
+  const match = name.match(/tirecalc-shared-v(\d+)$/);
+  return match ? Number(match[1]) : -1;
+}
+
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
+
     await cache.addAll(FILES);
     await self.skipWaiting();
   })());
@@ -75,25 +82,21 @@ self.addEventListener('activate', event => {
 
     let previous = null;
 
-    if (
-      state &&
-      state.lastGood &&
-      state.lastGood !== CACHE &&
-      keys.includes(state.lastGood) &&
-      await cacheHasFiles(state.lastGood)
-    ) {
-      previous = state.lastGood;
-    }
+    const preferred = [
+      state && state.lastGood,
+      state && state.active
+    ];
 
-    if (
-      !previous &&
-      state &&
-      state.active &&
-      state.active !== CACHE &&
-      keys.includes(state.active) &&
-      await cacheHasFiles(state.active)
-    ) {
-      previous = state.active;
+    for (const name of preferred) {
+      if (
+        name &&
+        name !== CACHE &&
+        keys.includes(name) &&
+        await cacheIsComplete(name)
+      ) {
+        previous = name;
+        break;
+      }
     }
 
     if (!previous) {
@@ -102,23 +105,29 @@ self.addEventListener('activate', event => {
           name.startsWith(CACHE_PREFIX) &&
           name !== CACHE
         )
-        .sort()
-        .reverse();
+        .sort((a, b) =>
+          versionNumber(b) - versionNumber(a)
+        );
 
       for (const name of candidates) {
-        if (await cacheHasFiles(name)) {
+        if (await cacheIsComplete(name)) {
           previous = name;
           break;
         }
       }
     }
 
+    const oldLastGood =
+      state &&
+      state.lastGood &&
+      await cacheIsComplete(state.lastGood)
+        ? state.lastGood
+        : previous;
+
     await writeState({
       active: CACHE,
       previous,
-      lastGood: state && state.lastGood
-        ? state.lastGood
-        : null,
+      lastGood: oldLastGood,
       rollbackAvailable: Boolean(previous),
       version: CACHE
     });
@@ -155,7 +164,7 @@ self.addEventListener('message', event => {
       state.active !== CACHE ||
       !state.previous ||
       !state.rollbackAvailable ||
-      !(await cacheHasFiles(state.previous))
+      !await cacheIsComplete(state.previous)
     ) {
       return;
     }
@@ -196,22 +205,22 @@ self.addEventListener('fetch', event => {
         : CACHE;
 
     const cache = await caches.open(activeName);
-    const cached = await cache.match(request);
+
+    const cached = await cache.match(
+      request,
+      request.mode === 'navigate'
+        ? { ignoreSearch: true }
+        : {}
+    );
 
     if (cached) return cached;
 
     try {
-      const response = await fetch(request);
-
-      if (response && response.ok) {
-        cache.put(request, response.clone()).catch(() => {});
-      }
-
-      return response;
+      return await fetch(request);
     } catch (_) {
       if (request.mode === 'navigate') {
         const page = await cache.match(
-          new URL('./index.html', self.location.href).href
+          fileUrl('./index.html')
         );
 
         if (page) return page;
