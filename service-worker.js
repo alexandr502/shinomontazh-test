@@ -1,6 +1,7 @@
-/* Test-only rollback worker — v8 */
-const CACHE = 'tirecalc-shared-v10';
-const CACHE_PREFIX = 'tirecalc-shared-';
+/* Test-only automatic rollback worker — v11 */
+
+const CACHE = 'tirecalc-shared-v11';
+const CACHE_PREFIX = 'tirecalc-shared-v';
 const CONTROL_CACHE = 'tirecalc-control-v2';
 
 const STATE_URL = new URL(
@@ -70,7 +71,9 @@ self.addEventListener('install', event => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
 
+    // Install only if every required file can be cached.
     await cache.addAll(FILES);
+
     await self.skipWaiting();
   })());
 });
@@ -82,6 +85,7 @@ self.addEventListener('activate', event => {
 
     let previous = null;
 
+    // Prefer the last version that reported a successful startup.
     const preferred = [
       state && state.lastGood,
       state && state.active
@@ -99,6 +103,7 @@ self.addEventListener('activate', event => {
       }
     }
 
+    // Otherwise, use the newest complete older cache.
     if (!previous) {
       const candidates = keys
         .filter(name =>
@@ -117,7 +122,7 @@ self.addEventListener('activate', event => {
       }
     }
 
-    const oldLastGood =
+    const lastGood =
       state &&
       state.lastGood &&
       await cacheIsComplete(state.lastGood)
@@ -127,7 +132,7 @@ self.addEventListener('activate', event => {
     await writeState({
       active: CACHE,
       previous,
-      lastGood: oldLastGood,
+      lastGood,
       rollbackAvailable: Boolean(previous),
       version: CACHE
     });
@@ -151,15 +156,23 @@ self.addEventListener('message', event => {
 
     if (!state) return;
 
+    // The new version is considered good only after the app reports success.
     if (type === 'TIRECALC_BOOT_OK') {
       if (state.active === CACHE) {
         state.lastGood = CACHE;
+
+        state.rollbackAvailable = Boolean(
+          state.previous &&
+          await cacheIsComplete(state.previous)
+        );
+
         await writeState(state);
       }
 
       return;
     }
 
+    // Roll back only when a complete previous cache exists.
     if (
       state.active !== CACHE ||
       !state.previous ||
@@ -169,6 +182,7 @@ self.addEventListener('message', event => {
       return;
     }
 
+    // Change the selected cache before asking pages to reload.
     state.active = state.previous;
     state.rollbackAvailable = false;
 
@@ -181,7 +195,9 @@ self.addEventListener('message', event => {
 
     for (const client of clients) {
       client.postMessage({
-        type: 'TIRECALC_ROLLBACK'
+        type: 'TIRECALC_ROLLBACK',
+        from: CACHE,
+        to: state.active
       });
     }
   })());
@@ -215,15 +231,16 @@ self.addEventListener('fetch', event => {
 
     if (cached) return cached;
 
+    // Do not mix network responses into a versioned cache.
     try {
       return await fetch(request);
     } catch (_) {
       if (request.mode === 'navigate') {
-        const page = await cache.match(
+        const fallback = await cache.match(
           fileUrl('./index.html')
         );
 
-        if (page) return page;
+        if (fallback) return fallback;
       }
 
       return Response.error();
