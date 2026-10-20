@@ -1,5 +1,5 @@
 /* Test-only rollback worker — v8 */
-const CACHE = 'tirecalc-shared-v8';
+const CACHE = 'tirecalc-shared-v9';
 const CACHE_PREFIX = 'tirecalc-shared-';
 const CONTROL_CACHE = 'tirecalc-control-v2';
 
