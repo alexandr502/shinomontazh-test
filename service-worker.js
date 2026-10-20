@@ -1,6 +1,7 @@
+/* Test-only rollback worker */
 const CACHE = 'tirecalc-shared-v6';
 const CACHE_PREFIX = 'tirecalc-shared-';
-const CONTROL_CACHE = 'tirecalc-control-v1';
+const CONTROL_CACHE = 'tirecalc-control-v2';
 
 const STATE_URL = new URL(
   './__tirecalc_state__.json',
@@ -16,8 +17,8 @@ const FILES = [
 ];
 
 async function readState() {
-  const control = await caches.open(CONTROL_CACHE);
-  const response = await control.match(STATE_URL);
+  const cache = await caches.open(CONTROL_CACHE);
+  const response = await cache.match(STATE_URL);
 
   if (!response) return null;
 
@@ -29,66 +30,97 @@ async function readState() {
 }
 
 async function writeState(state) {
-  const control = await caches.open(CONTROL_CACHE);
+  const cache = await caches.open(CONTROL_CACHE);
 
-  await control.put(
+  await cache.put(
     STATE_URL,
     new Response(JSON.stringify(state), {
-      headers: {
-        'Content-Type': 'application/json'
-      }
+      headers: { 'Content-Type': 'application/json' }
     })
   );
 }
 
+async function cacheHasFiles(name) {
+  if (!name) return false;
+
+  try {
+    const cache = await caches.open(name);
+
+    const root = await cache.match(
+      new URL('./', self.location.href).href
+    );
+
+    const index = await cache.match(
+      new URL('./index.html', self.location.href).href
+    );
+
+    return Boolean(root || index);
+  } catch (_) {
+    return false;
+  }
+}
+
 self.addEventListener('install', event => {
-  event.waitUntil(
-    caches.open(CACHE)
-      .then(cache => cache.addAll(FILES))
-      .then(() => self.skipWaiting())
-  );
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    await cache.addAll(FILES);
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
-    const oldState = await readState();
+    const state = await readState();
     const keys = await caches.keys();
 
-    const previousCaches = keys
-      .filter(key =>
-        key.startsWith(CACHE_PREFIX) &&
-        key !== CACHE
-      )
-      .sort()
-      .reverse();
+    let previous = null;
 
-        const lastGood =
-      oldState &&
-      oldState.lastGood &&
-      oldState.lastGood !== CACHE &&
-      keys.includes(oldState.lastGood)
-        ? oldState.lastGood
-        : null;
+    if (
+      state &&
+      state.lastGood &&
+      state.lastGood !== CACHE &&
+      keys.includes(state.lastGood) &&
+      await cacheHasFiles(state.lastGood)
+    ) {
+      previous = state.lastGood;
+    }
 
-    const oldActive =
-      oldState &&
-      oldState.active &&
-      oldState.active !== CACHE &&
-      keys.includes(oldState.active)
-        ? oldState.active
-        : null;
+    if (
+      !previous &&
+      state &&
+      state.active &&
+      state.active !== CACHE &&
+      keys.includes(state.active) &&
+      await cacheHasFiles(state.active)
+    ) {
+      previous = state.active;
+    }
 
-    const previous =
-      lastGood ||
-      oldActive ||
-      previousCaches[0] ||
-      null;
+    if (!previous) {
+      const candidates = keys
+        .filter(name =>
+          name.startsWith(CACHE_PREFIX) &&
+          name !== CACHE
+        )
+        .sort()
+        .reverse();
+
+      for (const name of candidates) {
+        if (await cacheHasFiles(name)) {
+          previous = name;
+          break;
+        }
+      }
+    }
 
     await writeState({
       active: CACHE,
-      previous: previous,
-      lastGood: oldState ? oldState.lastGood || null : null,
-      rollbackAvailable: Boolean(previous)
+      previous,
+      lastGood: state && state.lastGood
+        ? state.lastGood
+        : null,
+      rollbackAvailable: Boolean(previous),
+      version: CACHE
     });
 
     await self.clients.claim();
@@ -96,9 +128,7 @@ self.addEventListener('activate', event => {
 });
 
 self.addEventListener('message', event => {
-  if (!event.data) return;
-
-  const type = event.data.type;
+  const type = event.data && event.data.type;
 
   if (
     type !== 'TIRECALC_BOOT_OK' &&
@@ -124,7 +154,8 @@ self.addEventListener('message', event => {
     if (
       state.active !== CACHE ||
       !state.previous ||
-      !state.rollbackAvailable
+      !state.rollbackAvailable ||
+      !(await cacheHasFiles(state.previous))
     ) {
       return;
     }
