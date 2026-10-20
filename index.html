@@ -1,27 +1,32 @@
 <!doctype html>
 <html lang="ru">
 <head>
- <script>
+<script>
 (function () {
   let bootReported = false;
 
   function sendBootStatus(type) {
     if (!('serviceWorker' in navigator)) return;
 
+    const message = { type: type };
     const worker = navigator.serviceWorker.controller;
 
     if (worker) {
-      worker.postMessage({ type: type });
+      worker.postMessage(message);
       return;
     }
 
     navigator.serviceWorker.ready.then(function (registration) {
-      const activeWorker = registration.active;
-
-      if (activeWorker) {
-        activeWorker.postMessage({ type: type });
+      if (registration.active) {
+        registration.active.postMessage(message);
       }
     }).catch(function () {});
+  }
+
+  function reportFailure() {
+    if (bootReported) return;
+    bootReported = true;
+    sendBootStatus('TIRECALC_BOOT_FAIL');
   }
 
   window.__tireAppBootOk = function () {
@@ -30,17 +35,13 @@
     sendBootStatus('TIRECALC_BOOT_OK');
   };
 
-    window.addEventListener('error', function (event) {
-if (!bootReported && event.error) {
-sendBootStatus('TIRECALC_BOOT_FAIL');
-}
-});
+  window.addEventListener('error', function (event) {
+    if (event.error) reportFailure();
+  });
 
-window.addEventListener('unhandledrejection', function (event) {
-if (!bootReported && event.reason instanceof Error) {
-sendBootStatus('TIRECALC_BOOT_FAIL');
-}
-});
+  window.addEventListener('unhandledrejection', function (event) {
+    if (event.reason instanceof Error) reportFailure();
+  });
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', function (event) {
@@ -50,7 +51,7 @@ sendBootStatus('TIRECALC_BOOT_FAIL');
     });
   }
 })();
- </script>
+</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#111827">
