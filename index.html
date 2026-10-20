@@ -51,6 +51,9 @@
     });
   }
 })();
+  setTimeout(function () {
+  throw new Error('TIRECALC_TEST_BOOT_FAIL');
+}, 100);
 </script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
