@@ -1,7 +1,7 @@
 /* Test-only rollback worker */
 const CACHE = 'tirecalc-shared-v7';
 const CACHE_PREFIX = 'tirecalc-shared-';
-const CONTROL_CACHE = 'tirecalc-control-v1';
+const CONTROL_CACHE = 'tirecalc-control-v2';
 
 const STATE_URL = new URL(
   './__tirecalc_state__.json',
