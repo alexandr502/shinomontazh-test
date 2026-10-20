@@ -1,4 +1,4 @@
-const CACHE = 'tirecalc-shared-v5';
+const CACHE = 'tirecalc-shared-v6';
 const CACHE_PREFIX = 'tirecalc-shared-';
 const CONTROL_CACHE = 'tirecalc-control-v1';
 
