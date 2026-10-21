@@ -1,13 +1,10 @@
-/* Test-only automatic rollback worker — v11 */
-
-const CACHE = 'tirecalc-shared-v12';
+/* TireCalc test service worker — v13
+   Test repository only. Do not copy to the production repository until verified.
+*/
+const CACHE = 'tirecalc-shared-v13';
 const CACHE_PREFIX = 'tirecalc-shared-v';
 const CONTROL_CACHE = 'tirecalc-control-v2';
-
-const STATE_URL = new URL(
-  './__tirecalc_state__.json',
-  self.location.href
-).href;
+const CONTROL_KEY = './__tirecalc_control__';
 
 const FILES = [
   './',
@@ -17,136 +14,100 @@ const FILES = [
   './icon-512.png'
 ];
 
-function fileUrl(path) {
-  return new URL(path, self.location.href).href;
-}
+const DEFAULT_STATE = {
+  active: CACHE,
+  previous: null,
+  lastGood: null,
+  candidate: CACHE,
+  rollbackAvailable: false
+};
 
 async function readState() {
   try {
     const cache = await caches.open(CONTROL_CACHE);
-    const response = await cache.match(STATE_URL);
-    return response ? await response.json() : null;
-  } catch (_) {
-    return null;
-  }
+    const response = await cache.match(CONTROL_KEY);
+    if (response) {
+      return { ...DEFAULT_STATE, ...(await response.json()) };
+    }
+  } catch (_) {}
+  return { ...DEFAULT_STATE };
 }
 
 async function writeState(state) {
   const cache = await caches.open(CONTROL_CACHE);
-
   await cache.put(
-    STATE_URL,
+    CONTROL_KEY,
     new Response(JSON.stringify(state), {
-      headers: {
-        'Content-Type': 'application/json'
-      }
+      headers: { 'Content-Type': 'application/json' }
     })
   );
 }
 
-async function cacheIsComplete(name) {
-  if (!name) return false;
-
+async function cacheIsComplete(cacheName) {
   try {
-    const cache = await caches.open(name);
-
-    for (const file of FILES) {
-      if (!await cache.match(fileUrl(file))) {
-        return false;
-      }
-    }
-
-    return true;
+    const cache = await caches.open(cacheName);
+    const entries = await Promise.all(
+      FILES.map((file) => cache.match(file))
+    );
+    return entries.every(Boolean);
   } catch (_) {
     return false;
   }
 }
 
-function versionNumber(name) {
-  const match = name.match(/tirecalc-shared-v(\d+)$/);
-  return match ? Number(match[1]) : -1;
-}
-
-self.addEventListener('install', event => {
+self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
-
-    // Install only if every required file can be cached.
     await cache.addAll(FILES);
-
     await self.skipWaiting();
   })());
 });
 
-self.addEventListener('activate', event => {
+self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
-    const state = await readState();
-    const keys = await caches.keys();
+    const names = await caches.keys();
+
+    const candidates = names
+      .filter((name) =>
+        name.startsWith(CACHE_PREFIX) && name !== CACHE
+      )
+      .sort()
+      .reverse();
 
     let previous = null;
 
-    // Prefer the last version that reported a successful startup.
-    const preferred = [
-      state && state.lastGood,
-      state && state.active
-    ];
-
-    for (const name of preferred) {
-      if (
-        name &&
-        name !== CACHE &&
-        keys.includes(name) &&
-        await cacheIsComplete(name)
-      ) {
+    for (const name of candidates) {
+      if (await cacheIsComplete(name)) {
         previous = name;
         break;
       }
     }
 
-    // Otherwise, use the newest complete older cache.
-    if (!previous) {
-      const candidates = keys
-        .filter(name =>
-          name.startsWith(CACHE_PREFIX) &&
-          name !== CACHE
-        )
-        .sort((a, b) =>
-          versionNumber(b) - versionNumber(a)
-        );
+    const oldState = await readState();
 
-      for (const name of candidates) {
-        if (await cacheIsComplete(name)) {
-          previous = name;
-          break;
-        }
-      }
-    }
-
-    const lastGood =
-      state &&
-      state.lastGood &&
-      await cacheIsComplete(state.lastGood)
-        ? state.lastGood
-        : previous;
-
-    await writeState({
+    const state = {
       active: CACHE,
       previous,
-      lastGood,
-      rollbackAvailable: Boolean(previous),
-      version: CACHE
-    });
+      lastGood:
+        oldState.lastGood &&
+        await cacheIsComplete(oldState.lastGood)
+          ? oldState.lastGood
+          : previous,
+      candidate: CACHE,
+      rollbackAvailable: Boolean(previous)
+    };
 
+    await writeState(state);
     await self.clients.claim();
   })());
 });
 
-self.addEventListener('message', event => {
-  const type = event.data && event.data.type;
+self.addEventListener('message', (event) => {
+  const data = event.data || {};
 
   if (
-    type !== 'TIRECALC_BOOT_OK' &&
-    type !== 'TIRECALC_BOOT_FAIL'
+    data.type !== 'TIRECALC_BOOT_OK' &&
+    data.type !== 'TIRECALC_BOOT_FAIL'
   ) {
     return;
   }
@@ -154,36 +115,42 @@ self.addEventListener('message', event => {
   event.waitUntil((async () => {
     const state = await readState();
 
-    if (!state) return;
-
-    // The new version is considered good only after the app reports success.
-    if (type === 'TIRECALC_BOOT_OK') {
-      if (state.active === CACHE) {
-        state.lastGood = CACHE;
-
-        state.rollbackAvailable = Boolean(
-          state.previous &&
-          await cacheIsComplete(state.previous)
-        );
-
-        await writeState(state);
-      }
-
+    if (state.active !== CACHE || state.candidate !== CACHE) {
       return;
     }
 
-    // Roll back only when a complete previous cache exists.
+    if (data.type === 'TIRECALC_BOOT_OK') {
+      state.lastGood = CACHE;
+      state.candidate = null;
+      state.rollbackAvailable = Boolean(state.previous);
+      await writeState(state);
+      return;
+    }
+
+    let fallback = null;
+
     if (
-      state.active !== CACHE ||
-      !state.previous ||
-      !state.rollbackAvailable ||
-      !await cacheIsComplete(state.previous)
+      state.previous &&
+      await cacheIsComplete(state.previous)
     ) {
+      fallback = state.previous;
+    } else if (
+      state.lastGood &&
+      state.lastGood !== CACHE &&
+      await cacheIsComplete(state.lastGood)
+    ) {
+      fallback = state.lastGood;
+    }
+
+    if (!fallback) {
+      state.candidate = null;
+      state.rollbackAvailable = false;
+      await writeState(state);
       return;
     }
 
-    // Change the selected cache before asking pages to reload.
-    state.active = state.previous;
+    state.active = fallback;
+    state.candidate = null;
     state.rollbackAvailable = false;
 
     await writeState(state);
@@ -194,56 +161,43 @@ self.addEventListener('message', event => {
     });
 
     for (const client of clients) {
-      client.postMessage({
-        type: 'TIRECALC_ROLLBACK',
-        from: CACHE,
-        to: state.active
-      });
+      client.postMessage({ type: 'TIRECALC_ROLLBACK' });
     }
   })());
 });
 
-self.addEventListener('fetch', event => {
-  const request = event.request;
+self.addEventListener('fetch', (event) => {
+  if (event.request.method !== 'GET') return;
 
-  if (request.method !== 'GET') return;
-
-  const url = new URL(request.url);
+  const url = new URL(event.request.url);
 
   if (url.origin !== self.location.origin) return;
 
   event.respondWith((async () => {
     const state = await readState();
+    const selectedCache = state.active || CACHE;
+    const cache = await caches.open(selectedCache);
 
-    const activeName =
-      state && state.active
-        ? state.active
-        : CACHE;
-
-    const cache = await caches.open(activeName);
-
-    const cached = await cache.match(
-      request,
-      request.mode === 'navigate'
-        ? { ignoreSearch: true }
-        : {}
-    );
+    const cached = await cache.match(event.request, {
+      ignoreSearch: true
+    });
 
     if (cached) return cached;
 
-    // Do not mix network responses into a versioned cache.
     try {
-      return await fetch(request);
+      return await fetch(event.request);
     } catch (_) {
-      if (request.mode === 'navigate') {
-        const fallback = await cache.match(
-          fileUrl('./index.html')
-        );
-
+      if (event.request.mode === 'navigate') {
+        const fallback = await cache.match('./index.html');
         if (fallback) return fallback;
       }
 
-      return Response.error();
+      return new Response('Нет подключения к интернету.', {
+        status: 503,
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8'
+        }
+      });
     }
   })());
 });
