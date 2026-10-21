@@ -198,7 +198,6 @@ self.addEventListener('message', (event) => {
 
     if (!fallback) {
       state.candidate = null;
-      state.candidateStartedAt = null;
       state.rollbackAvailable = false;
 
       await writeState(state);
