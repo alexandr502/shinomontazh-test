@@ -4,6 +4,7 @@
 */
 
 const VERSION = 14;
+const BOOT_TIMEOUT_MS = 20000;
 const CACHE = `tirecalc-shared-v${VERSION}`;
 const CACHE_PREFIX = 'tirecalc-shared-v';
 const CONTROL_CACHE = 'tirecalc-control-v2';
@@ -22,6 +23,7 @@ const DEFAULT_STATE = {
   previous: null,
   lastGood: null,
   candidate: CACHE,
+  candidateStartedAt: null,
   rollbackAvailable: false
 };
 
@@ -125,11 +127,12 @@ self.addEventListener('activate', (event) => {
         ? oldState.lastGood
         : previous;
 
-    const state = {
+        const state = {
       active: CACHE,
       previous,
       lastGood,
       candidate: CACHE,
+      candidateStartedAt: Date.now(),
       rollbackAvailable: Boolean(previous)
     };
 
@@ -165,6 +168,7 @@ self.addEventListener('message', (event) => {
     if (data.type === 'TIRECALC_BOOT_OK') {
       state.lastGood = CACHE;
       state.candidate = null;
+      state.candidateStartedAt = null;
       state.rollbackAvailable = Boolean(
         state.previous &&
         await cacheIsComplete(state.previous)
@@ -194,6 +198,7 @@ self.addEventListener('message', (event) => {
 
     if (!fallback) {
       state.candidate = null;
+      state.candidateStartedAt = null;
       state.rollbackAvailable = false;
 
       await writeState(state);
