@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Проверка Service Worker — тестовый калькулятор</title>
+<style>
+body{font:16px/1.5 system-ui,sans-serif;max-width:760px;margin:24px auto;padding:0 16px;color:#18202b}
+h1{font-size:22px}button{padding:12px 16px;border:0;border-radius:10px;background:#1463e8;color:#fff;font:inherit}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f2f4f7;padding:14px;border-radius:10px}
+.note{color:#687386;font-size:14px}
+</style>
+</head>
+<body>
+<h1>Диагностика Service Worker</h1>
+<p class="note">Только чтение: эта страница ничего не удаляет, не меняет и не запускает тестовый откат.</p>
+<button id="run">Проверить состояние</button>
+<pre id="out">Нажмите «Проверить состояние».</pre>
+<script>
+const out = document.getElementById('out');
+const files = ['./','./index.html','./manifest.webmanifest','./icon-192.png','./icon-512.png'];
+async function run(){
+  const lines=[];
+  const add=(k,v)=>lines.push(k+': '+v);
+  add('Время проверки',new Date().toLocaleString('ru-RU'));
+  add('Адрес страницы',location.href);
+  add('Service Worker поддерживается','serviceWorker' in navigator ? 'ДА' : 'НЕТ');
+  add('Текущая страница контролируется',navigator.serviceWorker?.controller ? 'ДА' : 'НЕТ');
+  if ('serviceWorker' in navigator) {
+    try {
+      const regs=await navigator.serviceWorker.getRegistrations();
+      add('Количество регистраций',regs.length);
+      regs.forEach((r,i)=>{
+        add('Регистрация '+(i+1)+' scope',r.scope);
+        add('Регистрация '+(i+1)+' active',r.active ? r.active.state+' — '+r.active.scriptURL : 'нет');
+        add('Регистрация '+(i+1)+' waiting',r.waiting ? r.waiting.state+' — '+r.waiting.scriptURL : 'нет');
+        add('Регистрация '+(i+1)+' installing',r.installing ? r.installing.state+' — '+r.installing.scriptURL : 'нет');
+      });
+    } catch(e){add('Ошибка чтения регистраций',String(e));}
+  }
+  try{
+    const names=await caches.keys();
+    add('Имена кэшей',names.length ? names.join(', ') : 'кэшей нет');
+    for(const name of names.filter(n=>n.startsWith('tirecalc-shared-v'))){
+      const cache=await caches.open(name);
+      const checks=await Promise.all(files.map(async f=>{
+        try{return [f,!!(await cache.match(new URL(f,location.href).href,{ignoreSearch:true}))]}
+        catch(e){return [f,false]}
+      }));
+      add('Файлы в '+name,checks.map(([f,ok])=>(ok?'✓ ':'✗ ')+f).join(' | '));
+    }
+    const controlName='tirecalc-control-v2';
+    if(names.includes(controlName)){
+      const c=await caches.open(controlName);
+      const key=new URL('./__tirecalc_control__',location.href).href;
+      const resp=await c.match(key);
+      add('Состояние отката',resp ? JSON.stringify(await resp.json(),null,2) : 'запись состояния не найдена');
+    } else add('Состояние отката','служебный кэш отсутствует');
+  }catch(e){add('Ошибка чтения кэша',String(e));}
+  out.textContent=lines.join('\n');
+}
+document.getElementById('run').addEventListener('click',run);
+</script>
+</body>
+</html>
